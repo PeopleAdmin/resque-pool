@@ -47,6 +47,31 @@ environment variables can be used to determine environment).  For example in
     production:
       "foo,bar,baz": 4
 
+Custom Configuration
+----------
+
+Sometimes, a static YAML file doesn't cut it. At high levels of stress, you may
+want to update Resque::Pool's configuration settings on the go, maybe via other YAML
+files on the server or a database-backed solution. This is accomplished by
+creating a custom configuration manager by subclassing `Resque::Pool::ConfigManager`.
+
+    class CustomConfigurationManager < Resque::Pool::ConfigManager
+      def refresh!
+        pool.config.replace {} # ...or some other Resque::Pool compatible config
+      end
+    end
+
+    Resque::Pool.config_manager = CustomConfigurationManager
+
+Once you have told Resque::Pool which configuration manager to use, it will call
+that object's `refresh!` method. Any manipulation done to `pool.config` mutates
+the config in the pool.
+
+**Warning**: *Using a custom configuration manager is risky. Only attempt to use
+this feature if you are absolutely sure that your configuration manager does
+not break your systems. You can completely override your pool configuration if
+you are not careful!*
+
 ### Rake task config
 
 Require the rake tasks (`resque/pool/tasks`) in your `Rakefile`, load your

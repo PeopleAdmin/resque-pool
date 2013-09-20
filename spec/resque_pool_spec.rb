@@ -6,7 +6,55 @@ RSpec.configure do |config|
     ENV.delete 'RACK_ENV'
     ENV.delete 'RAILS_ENV'
     ENV.delete 'RESQUE_ENV'
+    Resque::Pool.config_manager = nil
   }
+end
+
+describe Resque::Pool, "when using a custom configuration manager" do
+  let(:config) do
+    { 'foo' => 1, 'bar' => 2, 'foo,bar' => 3, 'bar,foo' => 4, }
+  end
+  before  { Resque::Pool.config_manager = manager }
+  subject { Resque::Pool.new(config) }
+
+  context "when no errors are raised" do
+    let(:manager) do
+      Class.new(Resque::Pool::ConfigManager) do
+        def refresh!
+          pool.config.merge!("fooey" => 10)
+        end
+      end
+    end
+
+    it "should merge the other values into the pool's config" do
+      subject.refresh_config
+      subject.config["fooey"].should == 10
+      subject.config["foo"].should == 1
+      subject.config["bar"].should == 2
+      subject.config["foo,bar"].should == 3
+      subject.config["bar,foo"].should == 4
+    end
+  end
+
+  context "when an error is raised" do
+    let(:manager) do
+      Class.new(Resque::Pool::ConfigManager) do
+        def refresh!
+          pool.config.replace("fooey" => 10)
+          raise "Failure"
+        end
+      end
+    end
+
+    it "should replace the config of the original on an error" do
+      subject.refresh_config
+      subject.config["foo"].should == 1
+      subject.config["bar"].should == 2
+      subject.config["foo,bar"].should == 3
+      subject.config["bar,foo"].should == 4
+    end
+  end
+
 end
 
 describe Resque::Pool, "when loading a simple pool configuration" do

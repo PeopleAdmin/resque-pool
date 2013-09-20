@@ -18,12 +18,74 @@ module Resque
     include Logging
     extend  Logging
     attr_reader :config
+    attr_reader :config_manager
     attr_reader :workers
 
-    def initialize(config)
+    # There are cases where configuration needs to be updated on the fly.
+    # By default, Resque::Pool does not do this out of the box, but provides the
+    # ability to refresh queue config. The `refresh!` method will be called when
+    # determining which queues to maintain.
+    #
+    # For example:
+    #
+    #   class CustomManager < Resque::Pool::ConfigManager
+    #     def refresh!
+    #       # updates config from other sources (database, overrides, etc.)
+    #       pool.config.replace { "a,b,c" => 100 } # NOT RECOMMENDED
+    #     end
+    #   end
+    #
+    #   Resque::Pool.config_manager = CustomManager
+    #   pool = Resque::Pool.new({})
+    #
+    #   pool.config
+    #   # => { "a,b,c" => 100 }
+    #
+    # When Resque::Pool attempts to refresh it's configuration, it is smart
+    # enough to rescue from errors and return to the original config.
+    #
+    # For example:
+    #
+    #   class CustomManager2 < Resque::Pool::ConfigManager
+    #     def refresh!
+    #       pool.config.replace {}
+    #       raise "Some error during execution leaving the pool config empty"
+    #     end
+    #   end
+    #
+    #   Resque::Pool.config_manager = CustomManager2
+    #   pool = Resque::Pool.new({"foo" => 11})
+    #
+    #   pool.refresh_config
+    #   pool.config
+    #   # => { "foo" => 11 }
+    #
+    class ConfigManager
+      attr_reader :pool
+      def initialize(pool)
+        @pool = pool
+      end
+
+      def refresh!
+        # no-op
+      end
+    end
+
+    def initialize(config, manager = nil)
       init_config(config)
+      @config_manager = (manager || self.class.config_manager).new(self)
       @workers = Hash.new { |workers, queues| workers[queues] = {} }
       procline "(initialized)"
+    end
+
+    # Config Manager {{{
+
+    def self.config_manager
+      @config_manager ||= ConfigManager
+    end
+
+    def self.config_manager=(manager_klass)
+      @config_manager = manager_klass
     end
 
     # Config: after_prefork {{{
@@ -340,6 +402,14 @@ module Resque
     # }}}
     # ???: maintain_worker_count, all_known_queues {{{
 
+    def refresh_config
+      @original_config = config.clone
+      config_manager.refresh!
+    rescue => e
+      log "There was an error refreshing the configuration: #{e.message}, config: #{config.inspect}"
+      config.replace @original_config
+    end
+
     def maintain_worker_count
       all_known_queues.each do |queues|
         delta = worker_delta_for(queues)
@@ -349,6 +419,7 @@ module Resque
     end
 
     def all_known_queues
+      refresh_config
       config.keys | workers.keys
     end
 
