@@ -11,7 +11,11 @@ class FileOrHashSource
   end
 
   def retrieve_config(environment)
-    load_config_from_file(environment)
+    @config ||= load_config_from_file(environment)
+  end
+
+  def reset!
+    @config = nil
   end
 
   private

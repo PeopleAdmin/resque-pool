@@ -182,12 +182,16 @@ describe Resque::Pool, "when loading the pool configuration from a file" do
 
       File.open(config_file_path, "w"){|f| f.write "changed: 1"}
       subject.config.keys.should == ["orig"]
+      subject.load_config
+      subject.config.keys.should == ["orig"]
     end
 
     it "should reload the changes on HUP signal" do
       subject.config.keys.should == ["orig"]
 
       File.open(config_file_path, "w"){|f| f.write "changed: 1"}
+      subject.config.keys.should == ["orig"]
+      subject.load_config
       subject.config.keys.should == ["orig"]
 
       simulate_signal :HUP
@@ -215,7 +219,7 @@ describe Resque::Pool, "when loading the pool configuration from a custom source
   end
 
   it "should reset the config source on HUP" do
-    custom_source = double(retrieve_config: Hash.new)
+    custom_source = double(retrieve_config: Hash.new, reset!: true)
 
     pool = Resque::Pool.new(custom_source)
     custom_source.should have_received(:retrieve_config).once
