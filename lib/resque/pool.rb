@@ -4,6 +4,7 @@ require 'resque/worker'
 require 'resque/pool/version'
 require 'resque/pool/logging'
 require 'resque/pool/pooled_worker'
+require 'resque/pool/file_or_hash_source'
 require 'erb'
 require 'fcntl'
 require 'yaml'
@@ -18,10 +19,11 @@ module Resque
     include Logging
     extend  Logging
     attr_reader :config
+    attr_reader :config_source
     attr_reader :workers
 
-    def initialize(config)
-      init_config(config)
+    def initialize(config_source=nil)
+      init_config(config_source)
       @workers = Hash.new { |workers, queues| workers[queues] = {} }
       procline "(initialized)"
     end
@@ -51,8 +53,7 @@ module Resque
     # }}}
     # Config: class methods to start up the pool using the default config {{{
 
-    @config_files = ["resque-pool.yml", "config/resque-pool.yml"]
-    class << self; attr_accessor :config_files, :app_name; end
+    class << self; attr_accessor :config_source, :app_name; end
 
     def self.app_name
       @app_name ||= File.basename(Dir.pwd)
@@ -65,46 +66,32 @@ module Resque
       @handle_winch = bool
     end
 
-    def self.choose_config_file
-      if ENV["RESQUE_POOL_CONFIG"]
-        ENV["RESQUE_POOL_CONFIG"]
-      else
-        @config_files.detect { |f| File.exist?(f) }
-      end
-    end
-
     def self.run
       if GC.respond_to?(:copy_on_write_friendly=)
         GC.copy_on_write_friendly = true
       end
-      Resque::Pool.new(choose_config_file).start.join
+      create_configured.start.join
+    end
+
+    def self.create_configured
+      Resque::Pool.new(config_source)
     end
 
     # }}}
     # Config: load config and config file {{{
 
-    def config_file
-      @config_file || (!@config && ::Resque::Pool.choose_config_file)
-    end
-
-    def init_config(config)
-      case config
-      when String, nil
-        @config_file = config
+    def init_config(source)
+      case source
+      when String, Hash, nil
+        @config_source = FileOrHashSource.new(source)
       else
-        @config = config.dup
+        @config_source = source
       end
       load_config
     end
 
     def load_config
-      if config_file
-        @config = YAML.load(ERB.new(IO.read(config_file)).result)
-      else
-        @config ||= {}
-      end
-      environment and @config[environment] and config.merge!(@config[environment])
-      config.delete_if {|key, value| value.is_a? Hash }
+      @config = config_source.retrieve_config(environment)
     end
 
     def environment

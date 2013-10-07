@@ -157,7 +157,7 @@ describe Resque::Pool, "when loading the pool configuration from a file" do
 
   context "when a custom file is specified" do
     before { ENV["RESQUE_POOL_CONFIG"] = 'spec/resque-pool-custom.yml.erb' }
-    subject { Resque::Pool.new(Resque::Pool.choose_config_file) }
+    subject { Resque::Pool.new }
     it "should find the right file, and parse the ERB" do
       subject.config["foo"].should == 2
     end
@@ -199,6 +199,53 @@ describe Resque::Pool, "when loading the pool configuration from a file" do
       subject.sig_queue.clear
       subject.sig_queue.push signal
       subject.handle_sig_queue!
+    end
+  end
+
+end
+
+describe Resque::Pool, "when loading the pool configuration from a custom source" do
+  it "should retrieve the config based on the environment" do
+    custom_source = double(retrieve_config: Hash.new)
+    RAILS_ENV = "env"
+
+    Resque::Pool.new(custom_source)
+
+    custom_source.should have_received(:retrieve_config).with("env")
+  end
+
+  it "should reset the config source on HUP" do
+    custom_source = double(retrieve_config: Hash.new)
+
+    pool = Resque::Pool.new(custom_source)
+    custom_source.should have_received(:retrieve_config).once
+
+    pool.sig_queue.push :HUP
+    pool.handle_sig_queue!
+    custom_source.should have_received(:retrieve_config).twice
+  end
+
+end
+
+describe "the class-level .config_source attribute" do
+  context "when not provided" do
+    subject { Resque::Pool.create_configured }
+
+    it "created pools use config file and hash loading logic" do
+      subject.config_source.should be_instance_of FileOrHashSource
+    end
+  end
+
+  context "when provided with a custom config source" do
+    let(:custom_config_source) {
+      double(retrieve_config: Hash.new, refresh!: true)
+    }
+    before(:each) { Resque::Pool.config_source = custom_config_source }
+    after(:each) { Resque::Pool.config_source = nil }
+    subject { Resque::Pool.create_configured }
+
+    it "created pools use the specified config source" do
+      subject.config_source.should == custom_config_source
     end
   end
 
