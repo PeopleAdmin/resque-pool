@@ -33,7 +33,7 @@ module Resque
     # The `after_prefork` hooks will be run in workers if you are using the
     # preforking master worker to save memory. Use these hooks to reload
     # database connections and so forth to ensure that they're not shared
-    # among workers.
+    # among workers. The worker instance is passed as an argument to the block.
     #
     # Call with a block to set a hook.
     # Call with no arguments to return all registered hooks.
@@ -51,16 +51,17 @@ module Resque
       @after_prefork = [after_prefork]
     end
 
-    def call_after_prefork!
+    def call_after_prefork!(worker)
       self.class.after_prefork.each do |hook|
-        hook.call
+        hook.call(worker)
       end
     end
 
     # }}}
     # Config: class methods to start up the pool using the config loader {{{
 
-    class << self; attr_accessor :config_loader, :app_name; end
+    @config_files = ["resque-pool.yml", "config/resque-pool.yml"]
+    class << self; attr_accessor :config_files, :app_name, :spawn_delay, :config_loader; end
 
     def self.app_name
       @app_name ||= File.basename(Dir.pwd)
@@ -207,17 +208,13 @@ module Resque
       when :INT
         graceful_worker_shutdown!(signal)
       when :TERM
-        if term_child
+        case self.class.term_behavior
+        when "graceful_worker_shutdown_and_wait"
+          graceful_worker_shutdown_and_wait!(signal)
+        when "graceful_worker_shutdown"
           graceful_worker_shutdown!(signal)
         else
-          case self.class.term_behavior
-          when "graceful_worker_shutdown_and_wait"
-            graceful_worker_shutdown_and_wait!(signal)
-          when "graceful_worker_shutdown"
-            graceful_worker_shutdown!(signal)
-          else
-            shutdown_everything_now!(signal)
-          end
+          shutdown_everything_now!(signal)
         end
       end
     end
@@ -341,6 +338,7 @@ module Resque
     end
 
     def signal_all_workers(signal)
+      log "Sending #{signal} to all workers"
       all_pids.each do |pid|
         Process.kill signal, pid
       end
@@ -368,6 +366,7 @@ module Resque
     def spawn_missing_workers_for(queues)
       worker_delta_for(queues).times do |nr|
         spawn_worker!(queues)
+        sleep Resque::Pool.spawn_delay if Resque::Pool.spawn_delay
       end
     end
 
@@ -390,8 +389,9 @@ module Resque
       worker = create_worker(queues)
       pid = fork do
         Process.setpgrp unless Resque::Pool.single_process_group
+        worker.worker_parent_pid = Process.pid
         log_worker "Starting worker #{worker}"
-        call_after_prefork!
+        call_after_prefork!(worker)
         reset_sig_handlers!
         #self_pipe.each {|io| io.close }
         worker.work(ENV['INTERVAL'] || DEFAULT_WORKER_INTERVAL) # interval, will block
@@ -402,8 +402,13 @@ module Resque
     def create_worker(queues)
       queues = queues.to_s.split(',')
       worker = ::Resque::Worker.new(*queues)
+      worker.pool_master_pid = Process.pid
       worker.term_timeout = ENV['RESQUE_TERM_TIMEOUT'] || 4.0
       worker.term_child = ENV['TERM_CHILD']
+      if worker.respond_to?(:run_at_exit_hooks=)
+        # resque doesn't support this until 1.24, but we support 1.22
+        worker.run_at_exit_hooks = ENV['RUN_AT_EXIT_HOOKS'] || false
+      end
       if ENV['LOGGING'] || ENV['VERBOSE']
         worker.verbose = ENV['LOGGING'] || ENV['VERBOSE']
       end
